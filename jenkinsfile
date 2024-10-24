@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+
+    environment {
+        SOURCE_JENKINS = "http://source_jenkins_server"
+        DEST_JENKINS = "http://destination_jenkins_server"
+        TEMP_PLUGIN_LIST = "/tmp/jenkins_plugins.txt"
+        PLUGIN_DIR = "/var/lib/jenkins/plugins"
+    }
+
+    stages {
+        stage('Fetch Plugin List') {
+            steps {
+                script {
+                    // Use curl to fetch plugin list from source Jenkins
+                    sh """
+                    curl -s ${SOURCE_JENKINS}/pluginManager/api/xml?depth=1&xpath=/*/*/shortName|/*/*/version&wrapper=plugins |\
+                    sed 's/<\\/*shortName>/ /g' | sed 's/<\\/*version>/ /g' | awk '{print \$1\":\"\$2}' > ${TEMP_PLUGIN_LIST}
+                    """
+                }
+            }
+        }
+
+        stage('Download Plugins from Source Jenkins') {
+            steps {
+                script {
+                    // Read plugin list from the file and download each plugin from source Jenkins
+                    def plugins = readFile("${TEMP_PLUGIN_LIST}").split("\n")
+                    sh "mkdir -p /tmp/jenkins_plugins"
+                    
+                    plugins.each { plugin ->
+                        def pluginName = plugin.split(":")[0]
+                        echo "Downloading plugin: ${pluginName}"
+                        sh "curl -s -o /tmp/jenkins_plugins/${pluginName}.hpi ${SOURCE_JENKINS}/pluginManager/plugin/${pluginName}/download"
+                    }
+                }
+            }
+        }
+
+        stage('Install Plugins to Destination Jenkins') {
+            steps {
+                script {
+                    // Copy the downloaded plugins to the destination Jenkins plugin directory
+                    def plugins = readFile("${TEMP_PLUGIN_LIST}").split("\n")
+                    
+                    plugins.each { plugin ->
+                        def pluginName = plugin.split(":")[0]
+                        echo "Installing plugin: ${pluginName} on destination server"
+                        sh """
+                        scp /tmp/jenkins_plugins/${pluginName}.hpi user@${DEST_JENKINS}:${PLUGIN_DIR}/${pluginName}.hpi
+                        ssh user@${DEST_JENKINS} 'chown jenkins:jenkins ${PLUGIN_DIR}/${pluginName}.hpi && chmod 644 ${PLUGIN_DIR}/${pluginName}.hpi'
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Restart Jenkins on Destination') {
+            steps {
+                script {
+                    // Restart Jenkins on the destination server
+                    sh """
+                    ssh user@${DEST_JENKINS} 'sudo systemctl restart jenkins'
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Pipeline completed.'
+        }
+    }
+}
